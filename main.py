@@ -1,10 +1,9 @@
-# main.py - The Brain of your Agent
-# This single file handles the request and calls Gemini
-
+# main.py - Hybrid Agent (Code Logic + AI Creativity)
 import os
 import json
 import time
 import random
+from typing import List, Dict
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from google import genai
@@ -12,11 +11,11 @@ from google.genai import types
 
 app = FastAPI()
 
-# SECURITY: 
+# --- CONFIGURATION ---
 # Get Key: https://aistudio.google.com/
-# Set 'GEMINI_API_KEY' in Vercel > Settings > Environment Variables
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
+# --- DATA MODELS ---
 class PaymentInfo(BaseModel):
     count: int
     courseId: int
@@ -30,80 +29,89 @@ class VideoInfo(BaseModel):
     videoName: str
 
 class LearnerRequest(BaseModel):
-    payments: dict[str, PaymentInfo]
-    videos: dict[str, VideoInfo]
+    payments: Dict[str, PaymentInfo]
+    videos: Dict[str, VideoInfo]
 
+# --- 1. PYTHON LOGIC TOOL (Reliable) ---
+# This runs locally. It NEVER hallucinates because it is pure code.
+def analyze_learner_data(data: LearnerRequest) -> List[Dict]:
+    events = []
+    
+    # Logic A: Payments = High Priority Promotion
+    # If 'payments' map is not empty, user is interested in buying.
+    if data.payments:
+        # Taking the first payment entry for context
+        first_key = next(iter(data.payments))
+        p_data = data.payments[first_key]
+        events.append({
+            "event_type": "payment_promotion",
+            "context": f"User visited payment page for {p_data.courseName} {p_data.count} times.",
+            "recommended_action": "Offer a discount or nudge to complete purchase.",
+            "priority": "Urgent"
+        })
+
+    # Logic B: Videos
+    for vid_id, vid in data.videos.items():
+        if 1 <= vid.completion < 95:
+            events.append({
+                "event_type": "video_resume",
+                "context": f"Stopped watching {vid.videoName} at {vid.completion}%.",
+                "priority": "High"
+            })
+        elif vid.completion >= 95:
+             events.append({
+                "event_type": "video_milestone",
+                "context": f"Finished watching {vid.videoName}.",
+                "priority": "Medium"
+            })
+        elif vid.completion == 0:
+             events.append({
+                "event_type": "video_start",
+                "context": f"Has not started {vid.videoName} yet.",
+                "priority": "Low"
+            })
+            
+    return events
+
+# --- 2. API ENDPOINT ---
 @app.post("/generate_notifications")
 async def generate_notifications(data: LearnerRequest):
-    payload_str = json.dumps(data.model_dump())
+    # Step 1: Extract Signals using Python (Fast & Accurate)
+    derived_events = analyze_learner_data(data)
     
-    # Enhanced System Instruction for Catchy & Strict Output
-    # system_instruction = """
-    # You are an expert EdTech Notification Agent.
-    
-    # Goal: Analyze learner activity to generate high-converting, modern, and catchy push notifications.
-    
-    # Style Guide:
-    # - **Modern**: Use concise, punchy language. Think "Twitter/X" style short copy.
-    # - **Classic**: Use proven engagement hooks like "Don't break the chain" or "You're so close".
-    # - **Tone**: Encouraging, slightly urgent, but never annoying. Use emojis effectively (max 1 per title).
-    
-    # Logic Rules:
-    # 1. **Resume (High Priority)**: If video completion is > 0% and < 100%, create a 'reminder'. Focus on "Finishing what you started".
-    # 2. **Celebration (Medium Priority)**: If video completion is 100%, create a 'milestone'. Make them feel great.
-    # 3. **Discovery (Low Priority)**: If completion is 0%, create an 'engagement' hook to start the content.
-    # 4. **Payment/Promotion**: If 'payments' has any entries, YOU MUST create a 'promotion' notification for that course.
-    # 5. **Urgency**: If completion is 90-99%, set 'sendNow' to true.
+    if not derived_events:
+        return [] # No notifications needed
 
-    # Output Requirement:
-    # - You MUST return a JSON Array based on the schema provided. 
-    # - No Markdown formatting.
-    # """
-
+    payload_str = json.dumps(derived_events)
+    
+    # Step 2: Use AI for CREATIVITY only (Text Generation)
+    # We pass the *events*, not the raw data. This saves tokens and improves quality.
     system_instruction = """
-     You are the 'EdTech Notification Agent'. 
-     
-     Goal: Analyze learner activity to generate high-converting, modern, and catchy push notifications.
+    You are a Creative Copywriter for an EdTech App.
     
-     Input Data Structure:
-     The input is a JSON object with two main keys:
-     1. 'payments': A dictionary where keys are payment IDs (e.g., "payment_course_43") and values contain 'courseName' and 'lastVisitedAt'.
-     2. 'videos': A dictionary where keys are video IDs (e.g., "video_60") and values contain:
-        - 'completion' (integer 0-100)
-        - 'videoName' (string)
-        - 'lastWatchedAt' (timestamp)
+    INPUT: A list of specific 'events' derived from user activity.
+    TASK: Write a catchy, modern push notification for each event.
     
-     Style Guide:
-     - **Modern**: Use concise, punchy language. Think "Twitter/X" style short copy.
-     - **Classic**: Use proven engagement hooks like "Don't break the chain" or "You're so close".
-     - **Tone**: Encouraging, slightly urgent, but never annoying. Use emojis effectively (max 1 per title).
-
-     Analysis Rules:
-     1. Iterate through the values in the 'videos' and 'payments' object.
-     2. Resume Watching (High Priority): If 'completion' is > 0 and < 100, create a 'reminder' to finish '{videoName}'.
-     3. Completion Celebration (Medium Priority): If 'completion' is 100, create a 'milestone' to congratulate on finishing '{videoName}'.
-     4. Start Watching (Low Priority): If 'completion' is 0, create an 'engagement' nudge to start '{videoName}'.
-     5. Course Activity: Check 'payments' values. If ANY payment entry exists, you MUST create a 'promotion' related to '{courseName}' regardless of the timestamp.
-     6. Urgency Logic: If completion is between 90-99%, mark 'sendNow' as true (Urgent).
-
-     Constraint: Return ONLY the JSON array defined by the schema.
-     Create 1-3 notifications total. Mix the types if possible.
-
-     Output Requirement:
-     - You MUST return a JSON Array based on the schema provided. 
-     - No Markdown formatting.
+    GUIDELINES:
+    - "video_resume": Encouraging. "Keep going!", "You're so close."
+    - "video_milestone": Celebratory. "You did it!", "Great job."
+    - "payment_promotion": Urgent/Exciting. "Unlock full access", "Don't miss out."
+    - "video_start": Curiosity. "Check this out."
+    
+    STYLE:
+    - Modern, crisp, use 1 emoji per title.
+    - STRICT JSON output.
     """
     
-    # Retry Configuration for Robustness
+    # Retry Logic for 429/5xx errors
     max_retries = 3
-    base_delay = 1.0 # seconds
-    retry_codes = ["429", "500", "503", "504"]
+    base_delay = 1.0
 
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=f"Learner Data: {payload_str}",
+                contents=f"Events to Notify: {payload_str}",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     response_mime_type='application/json',
@@ -126,22 +134,9 @@ async def generate_notifications(data: LearnerRequest):
                     }
                 )
             )
-
             return json.loads(response.text)
 
         except Exception as e:
-            error_msg = str(e)
-            is_last_attempt = attempt == max_retries - 1
-            
-            # Check if error is likely transient (Rate limit or Server error)
-            is_transient = any(code in error_msg for code in retry_codes)
-
-            if is_transient and not is_last_attempt:
-                # Exponential Backoff + Jitter
-                sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0, 0.5)
-                print(f"Attempt {attempt + 1} failed with {error_msg}. Retrying in {sleep_time:.2f}s...")
-                time.sleep(sleep_time)
-            else:
-                # If not transient or it's the last attempt, fail hard
-                print(f"Request failed: {error_msg}")
+            if attempt == max_retries - 1:
                 raise HTTPException(status_code=500, detail=str(e))
+            time.sleep((base_delay * (2 ** attempt)) + random.uniform(0, 0.5))
